@@ -1,0 +1,17 @@
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.idea/
+.vscode/
+
+# Streamlit
+.streamlit/
+
+# Sistema
+.DS_Store
+Thumbs.db

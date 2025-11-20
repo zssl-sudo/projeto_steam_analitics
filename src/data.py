@@ -1,0 +1,350 @@
+import ast
+import os
+import re
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+
+DATA_DIR_CANDIDATES = [
+    "data/games.csv",
+    "games.csv",
+]
+PARQUET_CANDIDATES = [
+    "data/games.parquet",
+    "games.parquet",
+]
+
+LIST_COLS = [
+    "Supported languages",
+    "Full audio languages",
+    "Categories",
+    "Genres",
+    "genres",
+    "Tags",
+]
+
+BOOL_COLS = ["Windows", "Mac", "Linux"]
+
+DTYPE_HINTS = {
+    "AppID": "Int64",
+    "Peak CCU": "Int64",
+    "Required age": "Int64",
+    "Price": "float32",
+    "Metacritic score": "float32",
+    "User score": "float32",
+    "Positive": "Int64",
+    "Negative": "Int64",
+    "Recommendations": "Int64",
+}
+
+
+def _find_first_path(paths):
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _parse_list(x):
+    """Converte diversos formatos para lista.
+    Suporta: "['A','B']" (literal Python) e "A,B" (csv simples).
+    """
+    if pd.isna(x):
+        return []
+    s = str(x).strip()
+    # Tenta avaliar como literal Python primeiro
+    try:
+        val = ast.literal_eval(s)
+        if isinstance(val, list):
+            return val
+    except Exception:
+        pass
+    # Fallback: separar por vírgulas, ponto-e-vírgulas ou pipe
+    for sep in [",", ";", "|"]:
+        if sep in s:
+            return [p.strip() for p in s.split(sep) if p.strip()]
+    return [s] if s else []
+
+
+def _extract_year_fallback(s):
+    """Extrai um ano YYYY da string, com sanidade básica."""
+    if pd.isna(s):
+        return np.nan
+    m = re.search(r"(\d{4})", str(s))
+    if m:
+        y = int(m.group(1))
+        return y if 1970 <= y <= 2100 else np.nan
+    return np.nan
+
+
+def _parse_owners(s):
+    # "0 - 20000" -> (0, 20000, 10000)
+    if pd.isna(s):
+        return np.nan, np.nan, np.nan
+    try:
+        parts = str(s).replace(",", "").split("-")
+        a = int(parts[0].strip())
+        b = int(parts[1].strip()) if len(parts) > 1 else a
+        return a, b, (a + b) / 2
+    except Exception:
+        return np.nan, np.nan, np.nan
+
+
+DATE_CANDIDATES = [
+    # Priorizar colunas com ano explícito
+    "Year", "year",
+    # Em seguida, datas completas com diversos nomes
+    "Release date", "Release Date", "release_date", "ReleaseDate",
+    "Date", "date"
+]
+
+
+def _derive_release_year(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante que df['release_year'] exista e represente corretamente o ano de lançamento,
+    detectando automaticamente a coluna de data/ano.
+    Também padroniza a coluna 'Release date' quando possível.
+    """
+    # Escolhe a melhor coluna disponível
+    col = next((c for c in DATE_CANDIDATES if c in df.columns), None)
+    if col is None:
+        df["release_year"] = pd.Series(dtype="Int64")
+        return df
+
+    if col.lower() in ("year",):
+        # Coluna com o ano diretamente
+        years = pd.to_numeric(df[col], errors="coerce")
+        df["release_year"] = years.astype("Int64")
+        try:
+            df["Release date"] = pd.to_datetime(years, format="%Y", errors="coerce")
+        except Exception:
+            pass
+        return df
+
+    # Coluna com data completa (string)
+    dt = pd.to_datetime(df[col], errors="coerce")
+    years = dt.dt.year.astype("float")
+    mask = years.isna()
+    if mask.any():
+        years.loc[mask] = df.loc[mask, col].apply(_extract_year_fallback)
+    df["Release date"] = dt
+    df["release_year"] = pd.Series(years, dtype="Int64")
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_data():
+    parquet_path = _find_first_path(PARQUET_CANDIDATES)
+    csv_path = _find_first_path(DATA_DIR_CANDIDATES)
+
+    if parquet_path is not None:
+        df = pd.read_parquet(parquet_path)
+        # Tentar garantir release_year mesmo vindo de Parquet antigo
+        df = _derive_release_year(df)
+        # Se ainda não temos anos suficientes e existir CSV, reprocessa a partir do CSV
+        if ("release_year" not in df.columns or df["release_year"].dropna().nunique() < 2) and csv_path is not None:
+            try:
+                tmp_df = pd.read_csv(csv_path, engine="pyarrow")
+            except Exception:
+                tmp_df = pd.read_csv(csv_path)
+            # Reaplica todo o pipeline do bloco CSV abaixo de forma resumida
+            for c, t in DTYPE_HINTS.items():
+                if c in tmp_df.columns:
+                    try:
+                        tmp_df[c] = tmp_df[c].astype(t)
+                    except Exception:
+                        pass
+            tmp_df = _derive_release_year(tmp_df)
+            _bool_map = {
+                "true": True, "1": True, "yes": True, "y": True, "t": True,
+                "false": False, "0": False, "no": False, "n": False, "f": False,
+            }
+            for c in BOOL_COLS:
+                if c in tmp_df.columns:
+                    try:
+                        tmp_df[c] = (
+                            tmp_df[c].astype(str).str.strip().str.lower().map(_bool_map)
+                            .astype("boolean").fillna(False)
+                        )
+                    except Exception:
+                        try:
+                            tmp_df[c] = tmp_df[c].astype("boolean").fillna(False)
+                        except Exception:
+                            pass
+            for c in LIST_COLS:
+                if c in tmp_df.columns:
+                    tmp_df[c] = tmp_df[c].apply(_parse_list)
+            if "Genres" not in tmp_df.columns and "genres" in tmp_df.columns:
+                tmp_df["Genres"] = tmp_df["genres"]
+            if "Estimated owners" in tmp_df.columns:
+                owners_cols = list(zip(*tmp_df["Estimated owners"].apply(_parse_owners)))
+                if owners_cols:
+                    tmp_df["owners_min"], tmp_df["owners_max"], tmp_df["owners_mid"] = owners_cols
+            else:
+                tmp_df["owners_min"] = np.nan
+                tmp_df["owners_max"] = np.nan
+                tmp_df["owners_mid"] = np.nan
+            if "Price" in tmp_df.columns:
+                tmp_df["is_free"] = (tmp_df["Price"].fillna(0) <= 0.0)
+            else:
+                tmp_df["Price"] = np.nan
+                tmp_df["is_free"] = False
+            if "AppID" in tmp_df.columns:
+                tmp_df = tmp_df.drop_duplicates(subset=["AppID"])
+            if "Name" in tmp_df.columns:
+                tmp_df = tmp_df.dropna(subset=["Name"])  
+            pos = tmp_df["Positive"].fillna(0) if "Positive" in tmp_df.columns else 0
+            neg = tmp_df["Negative"].fillna(0) if "Negative" in tmp_df.columns else 0
+            denom = pos + neg
+            tmp_df["sentiment_ratio"] = np.where(denom > 0, pos / denom, np.nan)
+            if "Genres" in tmp_df.columns:
+                tmp_df["primary_genre"] = tmp_df["Genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+            elif "genres" in tmp_df.columns:
+                tmp_df["primary_genre"] = tmp_df["genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+            else:
+                tmp_df["primary_genre"] = "Unknown"
+            # Substitui df e regrava parquet otimizado
+            df = tmp_df
+            target_parquet = PARQUET_CANDIDATES[0]
+            try:
+                os.makedirs(os.path.dirname(target_parquet), exist_ok=True)
+                df.to_parquet(target_parquet, index=False)
+            except Exception:
+                pass
+    elif csv_path is not None:
+        # Prefer pyarrow engine if available
+        try:
+            df = pd.read_csv(csv_path, engine="pyarrow")
+        except Exception:
+            df = pd.read_csv(csv_path)
+
+        # Tipagem básica
+        for c, t in DTYPE_HINTS.items():
+            if c in df.columns:
+                try:
+                    df[c] = df[c].astype(t)
+                except Exception:
+                    pass
+
+        # Datas (robusto + detecção automática)
+        df = _derive_release_year(df)
+
+        # Booleanos (normaliza strings/0/1 para True/False de forma robusta)
+        _bool_map = {
+            "true": True, "1": True, "yes": True, "y": True, "t": True,
+            "false": False, "0": False, "no": False, "n": False, "f": False,
+        }
+        for c in BOOL_COLS:
+            if c in df.columns:
+                try:
+                    df[c] = (
+                        df[c]
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        .map(_bool_map)
+                        .astype("boolean")
+                        .fillna(False)
+                    )
+                except Exception:
+                    try:
+                        df[c] = df[c].astype("boolean").fillna(False)
+                    except Exception:
+                        pass
+
+        # Listas
+        for c in LIST_COLS:
+            if c in df.columns:
+                df[c] = df[c].apply(_parse_list)
+
+        # Unificar chave de gêneros para 'Genres'
+        if "Genres" not in df.columns and "genres" in df.columns:
+            df["Genres"] = df["genres"]
+
+        # Donos
+        if "Estimated owners" in df.columns:
+            owners_cols = list(zip(*df["Estimated owners"].apply(_parse_owners)))
+            if owners_cols:
+                df["owners_min"], df["owners_max"], df["owners_mid"] = owners_cols
+        else:
+            df["owners_min"] = np.nan
+            df["owners_max"] = np.nan
+            df["owners_mid"] = np.nan
+
+        # Flags e qualidade
+        if "Price" in df.columns:
+            df["is_free"] = (df["Price"].fillna(0) <= 0.0)
+        else:
+            df["Price"] = np.nan
+            df["is_free"] = False
+
+        if "AppID" in df.columns:
+            df = df.drop_duplicates(subset=["AppID"])
+        if "Name" in df.columns:
+            df = df.dropna(subset=["Name"])  # mantém NaT em datas
+
+        # Métricas derivadas
+        pos = df["Positive"].fillna(0) if "Positive" in df.columns else 0
+        neg = df["Negative"].fillna(0) if "Negative" in df.columns else 0
+        denom = pos + neg
+        df["sentiment_ratio"] = np.where(denom > 0, pos / denom, np.nan)
+
+        # Gênero primário
+        if "Genres" in df.columns:
+            df["primary_genre"] = df["Genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+        elif "genres" in df.columns:
+            df["primary_genre"] = df["genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+        else:
+            df["primary_genre"] = "Unknown"
+
+        # Salva Parquet otimizado se possível
+        target_parquet = PARQUET_CANDIDATES[0]
+        try:
+            os.makedirs(os.path.dirname(target_parquet), exist_ok=True)
+            df.to_parquet(target_parquet, index=False)
+        except Exception:
+            pass
+    else:
+        # Sem arquivo, retornar DF vazio com colunas mínimas
+        df = pd.DataFrame(columns=[
+            "AppID", "Name", "release_year", "Price", "owners_mid", "is_free",
+            "User score", "primary_genre", "Publishers"
+        ])
+
+    # Garantias pós-carga (CSV ou Parquet): sempre tentar derivar do melhor campo
+    # - Se houver menos de 2 anos únicos válidos, tente derivar novamente a partir dos candidatos
+    need_rederive = (
+        "release_year" not in df.columns
+        or df["release_year"].isna().all()
+        or df["release_year"].dropna().nunique() < 2
+    )
+    if need_rederive:
+        df = _derive_release_year(df)
+
+    # Garantir 'Genres' unificado e 'primary_genre' disponível mesmo no caminho Parquet
+    if "Genres" not in df.columns and "genres" in df.columns:
+        df["Genres"] = df["genres"]
+    if "primary_genre" not in df.columns:
+        if "Genres" in df.columns:
+            df["primary_genre"] = df["Genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+        elif "genres" in df.columns:
+            df["primary_genre"] = df["genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+        else:
+            df["primary_genre"] = "Unknown"
+
+    # Dimensão de gêneros para filtros
+    # Dimensão de gêneros: aceita 'Genres' ou 'genres'
+    genre_col = "Genres" if "Genres" in df.columns else ("genres" if "genres" in df.columns else None)
+    if genre_col is not None:
+        dim_genres = (
+            df.explode(genre_col)[genre_col]
+            .dropna().replace("", np.nan)
+            .dropna().value_counts().reset_index()
+        )
+        # Após reset_index, as colunas ficam ['index', genre_col] ou ['index', <series_name>]
+        # Garante nomes padronizados
+        dim_genres.columns = ["genre", "n"]
+    else:
+        dim_genres = pd.DataFrame({"genre": [], "n": []})
+
+    return df, dim_genres
