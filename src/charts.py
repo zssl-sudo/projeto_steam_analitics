@@ -72,20 +72,40 @@ def releases_by_year_chart(df, f):
 
 def price_vs_owners_scatter(df, f):
     q = _apply_filters(df, f)
-    if "owners_mid" not in q.columns or q["owners_mid"].dropna().empty:
-        st.info("Sem dados de owners para o gráfico de dispersão.")
+    # Verificações e limpeza de dados essenciais
+    if "owners_mid" not in q.columns:
+        st.info("Dataset sem coluna 'Estimated owners' → 'owners_mid' não disponível.")
         return
     q = q.dropna(subset=["owners_mid"]).copy()
+    if "Price" in q.columns:
+        q = q[q["Price"].notna()]
+    # Evitar zeros/negativos implausíveis
+    q = q[q["owners_mid"] > 0]
+
     # Garantir coluna de gênero principal
     if "primary_genre" not in q.columns:
         q["primary_genre"] = pd.Series(["Unknown"] * len(q), index=q.index)
+
+    # Se vazio, tenta relaxar filtros (score e gêneros) para garantir exibição
+    if q.empty:
+        f2 = dict(f)
+        f2["min_score"] = 0
+        f2["genres"] = []
+        q2 = _apply_filters(df, f2).dropna(subset=["owners_mid"]).copy()
+        if "Price" in q2.columns:
+            q2 = q2[q2["Price"].notna()]
+        q2 = q2[q2["owners_mid"] > 0]
+        if q2.empty:
+            st.info("Sem dados com os filtros atuais (mesmo após relaxar score e gêneros). Refine os filtros.")
+            return
+        st.caption("Sem dados com os filtros atuais. Exibindo com filtros relaxados (score mínimo 0 e todos os gêneros).")
+        q = q2
 
     total = len(q)
 
     # Heatmap para casos extremos (reduz drasticamente o payload)
     if total > HEATMAP_THRESHOLD:
         st.caption("Muitos pontos selecionados — exibindo heatmap para melhor desempenho.")
-        # Binarizar e agregar counts por bins
         bins_x = alt.Bin(maxbins=40)
         bins_y = alt.Bin(maxbins=40)
         heat = (
@@ -130,8 +150,9 @@ def price_vs_owners_scatter(df, f):
             size=alt.Size("Recommendations:Q", legend=None, scale=alt.Scale(range=[10, 500])),
             tooltip=tooltips,
         )
-        .interactive()
     )
+    if n <= 3_000:
+        chart = chart.interactive()
     st.altair_chart(chart, width="stretch")
 
 
@@ -146,7 +167,7 @@ def price_by_genre_boxplot(df, f):
     if len(q) > BOX_AGG_THRESHOLD:
         # Pré-calcula quantis no servidor para reduzir dados enviados
         qs = (
-            q.groupby("primary_genre")["Price"]
+            q.groupby("primary_genre", observed=True)["Price"]
             .quantile([0.0, 0.25, 0.5, 0.75, 1.0])
             .unstack()
             .rename(columns={0.00: "min", 0.25: "q1", 0.50: "med", 0.75: "q3", 1.00: "max"})

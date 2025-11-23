@@ -410,6 +410,27 @@ def load_data():
     if need_rederive:
         df = _derive_release_year(df)
 
+    # --- Recorte global de anos (últimos N anos) para todo o dashboard ---
+    # Aplica o corte após garantir release_year e antes de construir dimensões
+    try:
+        YEARS_BACK = int(os.getenv("YEARS_BACK", "10"))
+    except Exception:
+        YEARS_BACK = 10
+    if "release_year" in df.columns and df["release_year"].notna().any() and YEARS_BACK > 0:
+        try:
+            y_max = int(np.nanmax(df["release_year"]))
+            y_min_all = int(np.nanmin(df["release_year"]))
+            cutoff = max(y_min_all, y_max - YEARS_BACK + 1)
+            df = df[df["release_year"].between(cutoff, y_max)]
+            try:
+                # Só funciona dentro do contexto do Streamlit
+                st.caption(f"Exibindo apenas os últimos {YEARS_BACK} anos: {cutoff}–{y_max}.")
+            except Exception:
+                pass
+        except Exception:
+            # Se algo falhar, segue sem recorte para não quebrar o fluxo
+            pass
+
     # Garantir 'Genres' unificado e 'primary_genre' disponível mesmo no caminho Parquet
     if "Genres" not in df.columns and "genres" in df.columns:
         df["Genres"] = df["genres"]

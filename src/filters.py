@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -27,7 +28,13 @@ def sidebar_filters(df, dim_genres):
         y_min = int(np.nanmin(df["release_year"]))
         y_max = int(np.nanmax(df["release_year"]))
         if y_min < y_max:
-            years = st.sidebar.slider("Ano de lançamento", y_min, y_max, (y_min, y_max))
+            # Por padrão, exibir apenas os últimos N anos (N=10, configurável via YEARS_BACK_DEFAULT)
+            years_back_default = int(os.getenv("YEARS_BACK_DEFAULT", "10"))
+            lo_default = max(y_min, y_max - years_back_default + 1)
+            default_years = (lo_default, y_max)
+            # Travar o mínimo do slider no cutoff calculado (lo_default)
+            years = st.sidebar.slider("Ano de lançamento", lo_default, y_max, default_years)
+            st.sidebar.caption(f"Dashboard limitado aos últimos {years_back_default} anos: {lo_default}–{y_max}.")
         else:
             st.sidebar.caption(f"Ano único no dataset: {y_min}. Filtro de ano desativado.")
             years = (y_min, y_max)
