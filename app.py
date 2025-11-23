@@ -42,6 +42,25 @@ if df.empty:
 # Sidebar: filtros globais
 filters = sidebar_filters(df, dim_genres)
 
+# Sidebar: controle de exibição sob demanda
+try:
+    st.sidebar.divider()
+except Exception:
+    st.sidebar.markdown("---")
+
+view = st.sidebar.radio(
+    "Seção para exibir",
+    [
+        "Visão geral",
+        "Lançamentos por ano",
+        "Top publicadoras",
+        "Preço x Popularidade",
+        "Preço por gênero",
+    ],
+    index=0,
+    help="Renderize apenas uma seção por vez para deixar a página mais leve.",
+)
+
 def _safe_draw(fn, title: str | None = None):
     try:
         if title:
@@ -50,17 +69,18 @@ def _safe_draw(fn, title: str | None = None):
     except Exception as e:
         st.warning(f"Não foi possível renderizar um gráfico: {e}")
 
-# KPIs principais
-_safe_draw(lambda: kpi_cards(df, filters))
-
-col1, col2 = st.columns((3, 2), gap="large")
-with col1:
+# Renderização sob demanda
+if view == "Visão geral":
+    _safe_draw(lambda: kpi_cards(df, filters))
+    st.info("Selecione uma seção na barra lateral para exibir um gráfico específico sob demanda.")
+elif view == "Lançamentos por ano":
     _safe_draw(lambda: releases_by_year_chart(df, filters))
-with col2:
+elif view == "Top publicadoras":
     _safe_draw(lambda: top_publishers_bar(df, filters))
-
-_safe_draw(lambda: price_vs_owners_scatter(df, filters), title="Preço x Popularidade (owners)")
-_safe_draw(lambda: price_by_genre_boxplot(df, filters), title="Distribuição de preço por gênero")
+elif view == "Preço x Popularidade":
+    _safe_draw(lambda: price_vs_owners_scatter(df, filters), title="Preço x Popularidade (owners)")
+elif view == "Preço por gênero":
+    _safe_draw(lambda: price_by_genre_boxplot(df, filters), title="Distribuição de preço por gênero")
 
 st.markdown(
     """

@@ -16,6 +16,13 @@ BOX_AGG_THRESHOLD = 50_000           # acima disso, pré-agregar quantis para bo
 def _apply_filters(df, f):
     q = df.copy()
     # Ano (aplica só se fornecido)
+    # Fallback: se o filtro de ano foi definido mas a coluna não existe, tenta derivar
+    if f.get("years") is not None and "release_year" not in q.columns:
+        try:
+            from src.data import _derive_release_year
+            q = _derive_release_year(q)
+        except Exception:
+            pass
     if "release_year" in q.columns and f.get("years") is not None:
         lo, hi = f["years"]
         q = q[(q["release_year"].fillna(0) >= lo) & (q["release_year"].fillna(0) <= hi)]

@@ -25,10 +25,19 @@ def sidebar_filters(df, dim_genres):
     st.sidebar.header("Filtros")
 
     # Ano de lançamento
-    if "release_year" in df.columns and df["release_year"].notna().any():
-        y_min = int(np.nanmin(df["release_year"]))
+    df_years = df
+    # Fallback: tentar derivar release_year caso esteja ausente ou todo nulo
+    try:
+        if ("release_year" not in df_years.columns) or (not df_years["release_year"].notna().any()):
+            from src.data import _derive_release_year  # import local para evitar ciclos em tempo de import
+            df_years = _derive_release_year(df_years.copy())
+    except Exception:
+        pass
+
+    if "release_year" in df_years.columns and df_years["release_year"].notna().any():
+        y_min = int(np.nanmin(df_years["release_year"]))
         # Melhorar o máximo: limitar ao ano atual para evitar valores anômalos no dataset
-        ds_y_max = int(np.nanmax(df["release_year"]))
+        ds_y_max = int(np.nanmax(df_years["release_year"]))
         y_max = min(ds_y_max, datetime.now().year)
         if y_min < y_max:
             # Travar aos últimos 10 anos (sem depender de variável de ambiente)
