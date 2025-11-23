@@ -2,8 +2,8 @@ import altair as alt
 import streamlit as st
 import pandas as pd
 
-# Limitar dados embutidos nos gráficos para evitar payloads gigantes
-alt.data_transformers.enable("default", max_rows=50_000)
+# Limitar dados embutidos nos gráficos para evitar payloads gigantes (mais leve em produção)
+alt.data_transformers.enable("default", max_rows=15_000)
 
 # Limiares de desempenho (ajuste conforme necessário para o deploy)
 MAX_POINTS_SCATTER = 8_000           # máximo de pontos no scatter

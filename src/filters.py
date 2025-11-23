@@ -2,6 +2,7 @@ import os
 import streamlit as st
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 
 def _safe_min(series, default=0):
@@ -26,15 +27,17 @@ def sidebar_filters(df, dim_genres):
     # Ano de lançamento
     if "release_year" in df.columns and df["release_year"].notna().any():
         y_min = int(np.nanmin(df["release_year"]))
-        y_max = int(np.nanmax(df["release_year"]))
+        # Melhorar o máximo: limitar ao ano atual para evitar valores anômalos no dataset
+        ds_y_max = int(np.nanmax(df["release_year"]))
+        y_max = min(ds_y_max, datetime.now().year)
         if y_min < y_max:
-            # Por padrão, exibir apenas os últimos N anos (N=10, configurável via YEARS_BACK_DEFAULT)
-            years_back_default = int(os.getenv("YEARS_BACK_DEFAULT", "10"))
-            lo_default = max(y_min, y_max - years_back_default + 1)
+            # Travar aos últimos 10 anos (sem depender de variável de ambiente)
+            YEARS_BACK_FIXED = 10
+            lo_default = max(y_min, y_max - YEARS_BACK_FIXED + 1)
             default_years = (lo_default, y_max)
-            # Travar o mínimo do slider no cutoff calculado (lo_default)
+            # O usuário pode ajustar apenas dentro desta janela de 10 anos
             years = st.sidebar.slider("Ano de lançamento", lo_default, y_max, default_years)
-            st.sidebar.caption(f"Dashboard limitado aos últimos {years_back_default} anos: {lo_default}–{y_max}.")
+            st.sidebar.caption(f"Você pode ajustar somente dentro dos últimos {YEARS_BACK_FIXED} anos: {lo_default}–{y_max}.")
         else:
             st.sidebar.caption(f"Ano único no dataset: {y_min}. Filtro de ano desativado.")
             years = (y_min, y_max)
