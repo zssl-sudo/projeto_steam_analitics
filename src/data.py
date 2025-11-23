@@ -122,7 +122,13 @@ def _derive_release_year(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     # Coluna com data completa (string)
-    dt = pd.to_datetime(df[col], errors="coerce")
+    # Em pandas >= 2.2, usar format="mixed" evita o aviso e lida com formatos mistos.
+    raw = df[col].astype(str).str.strip()
+    try:
+        dt = pd.to_datetime(raw, errors="coerce", format="mixed", cache=True)
+    except TypeError:
+        # Compatibilidade caso a versão do pandas não suporte format="mixed"
+        dt = pd.to_datetime(raw, errors="coerce")
     years = dt.dt.year.astype("float")
     mask = years.isna()
     if mask.any():
