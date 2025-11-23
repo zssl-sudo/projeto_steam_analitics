@@ -20,8 +20,24 @@ st.caption(
 def get_data():
     return load_data()
 
-with st.spinner("Carregando e preparando os dados..."):
-    df, dim_genres = get_data()
+try:
+    with st.spinner("Carregando e preparando os dados..."):
+        df, dim_genres = get_data()
+except Exception as e:
+    import traceback
+    st.error("Falha ao carregar dados. Veja detalhes abaixo e configure o dataset para o deploy.")
+    st.code("\n".join(traceback.format_exception(e)))
+    st.info(
+        "Dica: garanta que exista data/games.parquet (recomendado) ou data/games.csv no repositório. "
+        "Alternativamente defina DATA_URL (em Secrets ou variável de ambiente) apontando para um CSV/Parquet público."
+    )
+    st.stop()
+
+if df.empty:
+    st.warning(
+        "Nenhum dado encontrado. Adicione data/games.parquet ou data/games.csv ao repositório, "
+        "ou configure DATA_URL (Secrets/variável de ambiente) com o link para o dataset."
+    )
 
 # Sidebar: filtros globais
 filters = sidebar_filters(df, dim_genres)

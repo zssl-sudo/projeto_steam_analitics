@@ -1,9 +1,15 @@
 import ast
 import os
 import re
+import io
+import urllib.request
 import numpy as np
 import pandas as pd
 import streamlit as st
+try:
+    import pyarrow.parquet as pq  # para fallback de leitura remota de Parquet
+except Exception:  # pragma: no cover
+    pq = None
 
 
 DATA_DIR_CANDIDATES = [
@@ -143,8 +149,50 @@ def load_data():
     parquet_path = _find_first_path(PARQUET_CANDIDATES)
     csv_path = _find_first_path(DATA_DIR_CANDIDATES)
 
+    # Helper: URL remoto opcional via secrets/variável de ambiente
+    def _get_data_url():
+        try:
+            # st.secrets pode não existir fora do Streamlit
+            if "DATA_URL" in st.secrets:
+                return st.secrets["DATA_URL"]
+        except Exception:
+            pass
+        return os.getenv("DATA_URL")
+
+    def _load_remote(url: str) -> pd.DataFrame:
+        if not url:
+            raise FileNotFoundError("DATA_URL não configurada")
+        lower = url.lower()
+        if lower.endswith(".parquet"):
+            # Tenta com pyarrow primeiro
+            try:
+                return pd.read_parquet(url, engine="pyarrow")
+            except Exception:
+                # Fallback: baixar via urllib e ler com pyarrow.parquet
+                if pq is None:
+                    # Último recurso: tentar o backend padrão do pandas (pode ainda falhar)
+                    return pd.read_parquet(url)
+                with urllib.request.urlopen(url) as resp:
+                    data = resp.read()
+                table = pq.read_table(io.BytesIO(data))
+                return table.to_pandas()
+        # Assume CSV caso contrário
+        try:
+            return pd.read_csv(url)
+        except Exception:
+            # Último recurso: tentar engine pyarrow (pode não suportar todos os protocolos)
+            return pd.read_csv(url, engine="pyarrow")
+
     if parquet_path is not None:
-        df = pd.read_parquet(parquet_path)
+        # Leitura tolerante a LFS/arquivos corrompidos
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception:
+            df = None
+    else:
+        df = None
+
+    if df is not None:
         # Tentar garantir release_year mesmo vindo de Parquet antigo
         df = _derive_release_year(df)
         # Se ainda não temos anos suficientes e existir CSV, reprocessa a partir do CSV
@@ -222,100 +270,118 @@ def load_data():
         try:
             df = pd.read_csv(csv_path, engine="pyarrow")
         except Exception:
-            df = pd.read_csv(csv_path)
+            try:
+                df = pd.read_csv(csv_path)
+            except Exception:
+                df = None
 
-        # Tipagem básica
-        for c, t in DTYPE_HINTS.items():
-            if c in df.columns:
-                try:
-                    df[c] = df[c].astype(t)
-                except Exception:
-                    pass
-
-        # Datas (robusto + detecção automática)
-        df = _derive_release_year(df)
-
-        # Booleanos (normaliza strings/0/1 para True/False de forma robusta)
-        _bool_map = {
-            "true": True, "1": True, "yes": True, "y": True, "t": True,
-            "false": False, "0": False, "no": False, "n": False, "f": False,
-        }
-        for c in BOOL_COLS:
-            if c in df.columns:
-                try:
-                    df[c] = (
-                        df[c]
-                        .astype(str)
-                        .str.strip()
-                        .str.lower()
-                        .map(_bool_map)
-                        .astype("boolean")
-                        .fillna(False)
-                    )
-                except Exception:
+        if df is not None:
+            # Tipagem básica
+            for c, t in DTYPE_HINTS.items():
+                if c in df.columns:
                     try:
-                        df[c] = df[c].astype("boolean").fillna(False)
+                        df[c] = df[c].astype(t)
                     except Exception:
                         pass
 
-        # Listas
-        for c in LIST_COLS:
-            if c in df.columns:
-                df[c] = df[c].apply(_parse_list)
+            # Datas (robusto + detecção automática)
+            df = _derive_release_year(df)
 
-        # Unificar chave de gêneros para 'Genres'
-        if "Genres" not in df.columns and "genres" in df.columns:
-            df["Genres"] = df["genres"]
+            # Booleanos (normaliza strings/0/1 para True/False de forma robusta)
+            _bool_map = {
+                "true": True, "1": True, "yes": True, "y": True, "t": True,
+                "false": False, "0": False, "no": False, "n": False, "f": False,
+            }
+            for c in BOOL_COLS:
+                if c in df.columns:
+                    try:
+                        df[c] = (
+                            df[c]
+                            .astype(str)
+                            .str.strip()
+                            .str.lower()
+                            .map(_bool_map)
+                            .astype("boolean")
+                            .fillna(False)
+                        )
+                    except Exception:
+                        try:
+                            df[c] = df[c].astype("boolean").fillna(False)
+                        except Exception:
+                            pass
 
-        # Donos
-        if "Estimated owners" in df.columns:
-            owners_cols = list(zip(*df["Estimated owners"].apply(_parse_owners)))
-            if owners_cols:
-                df["owners_min"], df["owners_max"], df["owners_mid"] = owners_cols
-        else:
-            df["owners_min"] = np.nan
-            df["owners_max"] = np.nan
-            df["owners_mid"] = np.nan
+            # Listas
+            for c in LIST_COLS:
+                if c in df.columns:
+                    df[c] = df[c].apply(_parse_list)
 
-        # Flags e qualidade
-        if "Price" in df.columns:
-            df["is_free"] = (df["Price"].fillna(0) <= 0.0)
-        else:
-            df["Price"] = np.nan
-            df["is_free"] = False
+            # Unificar chave de gêneros para 'Genres'
+            if "Genres" not in df.columns and "genres" in df.columns:
+                df["Genres"] = df["genres"]
 
-        if "AppID" in df.columns:
-            df = df.drop_duplicates(subset=["AppID"])
-        if "Name" in df.columns:
-            df = df.dropna(subset=["Name"])  # mantém NaT em datas
+            # Donos
+            if "Estimated owners" in df.columns:
+                owners_cols = list(zip(*df["Estimated owners"].apply(_parse_owners)))
+                if owners_cols:
+                    df["owners_min"], df["owners_max"], df["owners_mid"] = owners_cols
+            else:
+                df["owners_min"] = np.nan
+                df["owners_max"] = np.nan
+                df["owners_mid"] = np.nan
 
-        # Métricas derivadas
-        pos = df["Positive"].fillna(0) if "Positive" in df.columns else 0
-        neg = df["Negative"].fillna(0) if "Negative" in df.columns else 0
-        denom = pos + neg
-        df["sentiment_ratio"] = np.where(denom > 0, pos / denom, np.nan)
+            # Flags e qualidade
+            if "Price" in df.columns:
+                df["is_free"] = (df["Price"].fillna(0) <= 0.0)
+            else:
+                df["Price"] = np.nan
+                df["is_free"] = False
 
-        # Gênero primário
-        if "Genres" in df.columns:
-            df["primary_genre"] = df["Genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
-        elif "genres" in df.columns:
-            df["primary_genre"] = df["genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
-        else:
-            df["primary_genre"] = "Unknown"
+            if "AppID" in df.columns:
+                df = df.drop_duplicates(subset=["AppID"])
+            if "Name" in df.columns:
+                df = df.dropna(subset=["Name"])  # mantém NaT em datas
 
-        # Salva Parquet otimizado se possível
-        target_parquet = PARQUET_CANDIDATES[0]
-        try:
-            os.makedirs(os.path.dirname(target_parquet), exist_ok=True)
-            df.to_parquet(target_parquet, index=False)
-        except Exception:
-            pass
+            # Métricas derivadas
+            pos = df["Positive"].fillna(0) if "Positive" in df.columns else 0
+            neg = df["Negative"].fillna(0) if "Negative" in df.columns else 0
+            denom = pos + neg
+            df["sentiment_ratio"] = np.where(denom > 0, pos / denom, np.nan)
+
+            # Gênero primário
+            if "Genres" in df.columns:
+                df["primary_genre"] = df["Genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+            elif "genres" in df.columns:
+                df["primary_genre"] = df["genres"].apply(lambda xs: xs[0] if isinstance(xs, list) and len(xs) else "Unknown")
+            else:
+                df["primary_genre"] = "Unknown"
+
+            # Salva Parquet otimizado se possível
+            target_parquet = PARQUET_CANDIDATES[0]
+            try:
+                os.makedirs(os.path.dirname(target_parquet), exist_ok=True)
+                df.to_parquet(target_parquet, index=False)
+            except Exception:
+                pass
     else:
-        # Sem arquivo, retornar DF vazio com colunas mínimas
-        df = pd.DataFrame(columns=[
-            "AppID", "Name", "release_year", "Price", "owners_mid", "is_free",
-            "User score", "primary_genre", "Publishers"
-        ])
+        # Nem Parquet nem CSV válidos: tenta URL remota
+        url = _get_data_url()
+        if url:
+            try:
+                df = _load_remote(url)
+                df = _derive_release_year(df)
+                st.caption("Carregado dataset remoto definido em DATA_URL.")
+            except Exception:
+                df = None
+        if df is None:
+            # Sem arquivo, retornar DF vazio com colunas mínimas
+            st.warning(
+                "Nenhum arquivo local encontrado (data/games.parquet ou data/games.csv). "
+                "Opcionalmente configure DATA_URL (secrets ou variável de ambiente) para baixar o dataset automaticamente."
+            )
+            df = pd.DataFrame(columns=[
+                "AppID", "Name", "release_year", "Price", "owners_mid", "is_free",
+                "User score", "primary_genre", "Publishers"
+            ])
 
     # Garantias pós-carga (CSV ou Parquet): sempre tentar derivar do melhor campo
     # - Se houver menos de 2 anos únicos válidos, tente derivar novamente a partir dos candidatos
