@@ -5,6 +5,13 @@ import pandas as pd
 # Limitar dados embutidos nos gráficos para evitar payloads gigantes
 alt.data_transformers.enable("default", max_rows=50_000)
 
+# Limiares de desempenho (ajuste conforme necessário para o deploy)
+MAX_POINTS_SCATTER = 8_000           # máximo de pontos no scatter
+TOOLTIP_SWITCH = 2_000               # acima disso, usar tooltips mínimos
+TOOLTIP_DISABLE = 10_000             # acima disso, desativar tooltips
+HEATMAP_THRESHOLD = 30_000           # acima disso, usar heatmap em vez de scatter
+BOX_AGG_THRESHOLD = 50_000           # acima disso, pré-agregar quantis para boxplot
+
 
 def _apply_filters(df, f):
     q = df.copy()
@@ -73,25 +80,58 @@ def price_vs_owners_scatter(df, f):
     if "primary_genre" not in q.columns:
         q["primary_genre"] = pd.Series(["Unknown"] * len(q), index=q.index)
 
-    # Downsample para evitar payload excessivo no front-end
-    MAX_POINTS = 20_000
     total = len(q)
-    if total > MAX_POINTS:
-        q = q.sample(n=MAX_POINTS, random_state=42)
-        st.caption(f"Amostrando {MAX_POINTS:,} de {total:,} pontos para desempenho.")
 
-    # Reduzir tooltips quando ainda houver muitos pontos, para cortar tamanho de mensagem
+    # Heatmap para casos extremos (reduz drasticamente o payload)
+    if total > HEATMAP_THRESHOLD:
+        st.caption("Muitos pontos selecionados — exibindo heatmap para melhor desempenho.")
+        # Binarizar e agregar counts por bins
+        bins_x = alt.Bin(maxbins=40)
+        bins_y = alt.Bin(maxbins=40)
+        heat = (
+            alt.Chart(q)
+            .transform_bin("price_bin", "Price", bin=bins_x)
+            .transform_bin("owners_bin", "owners_mid", bin=bins_y)
+            .transform_aggregate(count="count()", groupby=["price_bin", "owners_bin"])
+            .mark_rect()
+            .encode(
+                x=alt.X("price_bin:Q", title="Preço (USD)"),
+                y=alt.Y("owners_bin:Q", title="Owners (midpoint)"),
+                color=alt.Color("count:Q", scale=alt.Scale(scheme="plasma")),
+                tooltip=[alt.Tooltip("count:Q", title="Quantidade")],
+            )
+        )
+        st.altair_chart(heat, width="stretch")
+        return
+
+    # Downsample para evitar payload excessivo no front-end
+    if total > MAX_POINTS_SCATTER:
+        q = q.sample(n=MAX_POINTS_SCATTER, random_state=42)
+        st.caption(f"Amostrando {MAX_POINTS_SCATTER:,} de {total:,} pontos para desempenho.")
+
+    # Reduzir/Desligar tooltips conforme tamanho
     full_tooltips = [c for c in ["Name", "Price", "owners_mid", "primary_genre", "Publishers", "User score"] if c in q.columns]
     minimal_tooltips = [c for c in ["Name", "Price", "owners_mid", "primary_genre"] if c in q.columns]
-    tooltips = full_tooltips if len(q) <= 5_000 else minimal_tooltips
+    n = len(q)
+    if n > TOOLTIP_DISABLE:
+        tooltips = []
+    elif n > TOOLTIP_SWITCH:
+        tooltips = minimal_tooltips
+    else:
+        tooltips = full_tooltips
 
-    chart = alt.Chart(q).mark_circle(opacity=0.6).encode(
-        x=alt.X("Price:Q", title="Preço (USD)", scale=alt.Scale(zero=False)),
-        y=alt.Y("owners_mid:Q", title="Owners (midpoint)", scale=alt.Scale(zero=False)),
-        color=alt.Color("primary_genre:N", legend=alt.Legend(title="Gênero")),
-        size=alt.Size("Recommendations:Q", legend=None, scale=alt.Scale(range=[10, 500])),
-        tooltip=tooltips
-    ).interactive()
+    chart = (
+        alt.Chart(q)
+        .mark_circle(opacity=0.6)
+        .encode(
+            x=alt.X("Price:Q", title="Preço (USD)", scale=alt.Scale(zero=False)),
+            y=alt.Y("owners_mid:Q", title="Owners (midpoint)", scale=alt.Scale(zero=False)),
+            color=alt.Color("primary_genre:N", legend=alt.Legend(title="Gênero")),
+            size=alt.Size("Recommendations:Q", legend=None, scale=alt.Scale(range=[10, 500])),
+            tooltip=tooltips,
+        )
+        .interactive()
+    )
     st.altair_chart(chart, width="stretch")
 
 
@@ -102,10 +142,28 @@ def price_by_genre_boxplot(df, f):
         return
     top10 = q["primary_genre"].value_counts().head(10).index
     q = q[q["primary_genre"].isin(top10)]
+
+    if len(q) > BOX_AGG_THRESHOLD:
+        # Pré-calcula quantis no servidor para reduzir dados enviados
+        qs = (
+            q.groupby("primary_genre")["Price"]
+            .quantile([0.0, 0.25, 0.5, 0.75, 1.0])
+            .unstack()
+            .rename(columns={0.00: "min", 0.25: "q1", 0.50: "med", 0.75: "q3", 1.00: "max"})
+            .reset_index()
+        )
+        base = alt.Chart(qs).encode(x=alt.X("primary_genre:N", sort="-y", title="Gênero"))
+        iqr = base.mark_bar(color="#8E6CFF", opacity=0.7).encode(y="q1:Q", y2="q3:Q")
+        whisk = base.mark_rule(color="#8E6CFF").encode(y="min:Q", y2="max:Q")
+        med = base.mark_tick(color="white", size=20).encode(y="med:Q")
+        st.altair_chart(iqr + whisk + med, width="stretch")
+        st.caption("Boxplot com quantis pré-calculados para melhor desempenho.")
+        return
+
     chart = alt.Chart(q).mark_boxplot().encode(
         x=alt.X("primary_genre:N", sort="-y", title="Gênero"),
         y=alt.Y("Price:Q", title="Preço"),
-        color=alt.Color("primary_genre:N", legend=None)
+        color=alt.Color("primary_genre:N", legend=None),
     )
     st.altair_chart(chart, width="stretch")
 

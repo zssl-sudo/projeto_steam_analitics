@@ -42,20 +42,25 @@ if df.empty:
 # Sidebar: filtros globais
 filters = sidebar_filters(df, dim_genres)
 
+def _safe_draw(fn, title: str | None = None):
+    try:
+        if title:
+            st.subheader(title)
+        fn()
+    except Exception as e:
+        st.warning(f"Não foi possível renderizar um gráfico: {e}")
+
 # KPIs principais
-kpi_cards(df, filters)
+_safe_draw(lambda: kpi_cards(df, filters))
 
 col1, col2 = st.columns((3, 2), gap="large")
 with col1:
-    releases_by_year_chart(df, filters)
+    _safe_draw(lambda: releases_by_year_chart(df, filters))
 with col2:
-    top_publishers_bar(df, filters)
+    _safe_draw(lambda: top_publishers_bar(df, filters))
 
-st.subheader("Preço x Popularidade (owners)")
-price_vs_owners_scatter(df, filters)
-
-st.subheader("Distribuição de preço por gênero")
-price_by_genre_boxplot(df, filters)
+_safe_draw(lambda: price_vs_owners_scatter(df, filters), title="Preço x Popularidade (owners)")
+_safe_draw(lambda: price_by_genre_boxplot(df, filters), title="Distribuição de preço por gênero")
 
 st.markdown(
     """

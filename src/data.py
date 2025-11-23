@@ -144,7 +144,7 @@ def _derive_release_year(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=600)
 def load_data():
     parquet_path = _find_first_path(PARQUET_CANDIDATES)
     csv_path = _find_first_path(DATA_DIR_CANDIDATES)
@@ -266,14 +266,31 @@ def load_data():
             except Exception:
                 pass
     elif csv_path is not None:
-        # Prefer pyarrow engine if available
+        # Detecta ponteiro de Git LFS em CSV (não contém dados reais)
+        is_lfs_pointer = False
         try:
-            df = pd.read_csv(csv_path, engine="pyarrow")
-        except Exception:
+            with open(csv_path, "rb") as fh:
+                head = fh.read(256)
             try:
-                df = pd.read_csv(csv_path)
+                head_text = head.decode("utf-8", errors="ignore")
+                if "https://git-lfs.github.com/spec/v1" in head_text:
+                    is_lfs_pointer = True
             except Exception:
-                df = None
+                pass
+        except Exception:
+            pass
+
+        if is_lfs_pointer:
+            df = None
+        else:
+        # Prefer pyarrow engine if available
+            try:
+                df = pd.read_csv(csv_path, engine="pyarrow")
+            except Exception:
+                try:
+                    df = pd.read_csv(csv_path)
+                except Exception:
+                    df = None
 
         if df is not None:
             # Tipagem básica
@@ -418,5 +435,18 @@ def load_data():
         dim_genres.columns = ["genre", "n"]
     else:
         dim_genres = pd.DataFrame({"genre": [], "n": []})
+
+    # Compactação de dtypes para reduzir memória (útil no deploy)
+    try:
+        if "primary_genre" in df.columns:
+            df["primary_genre"] = df["primary_genre"].astype("category")
+        if "Publishers" in df.columns:
+            # Pode ser string; categorias economizam memória
+            df["Publishers"] = df["Publishers"].astype("category")
+        for c in ["Price", "User score"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
+    except Exception:
+        pass
 
     return df, dim_genres
