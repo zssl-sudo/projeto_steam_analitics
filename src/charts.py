@@ -2,7 +2,8 @@ import altair as alt
 import streamlit as st
 import pandas as pd
 
-alt.data_transformers.disable_max_rows()
+# Limitar dados embutidos nos gráficos para evitar payloads gigantes
+alt.data_transformers.enable("default", max_rows=50_000)
 
 
 def _apply_filters(df, f):
@@ -59,7 +60,7 @@ def releases_by_year_chart(df, f):
     base = alt.Chart(year_stats).encode(x=alt.X("release_year:O", title="Ano"))
     bars = base.mark_bar(color="#3772FF").encode(y=alt.Y("releases:Q", title="Lançamentos"))
     line = base.mark_line(color="#36B37E").encode(y=alt.Y("user_score_mean:Q", title="Score médio"))
-    st.altair_chart((bars + line).resolve_scale(y="independent"), use_container_width=True)
+    st.altair_chart((bars + line).resolve_scale(y="independent"), width="stretch")
 
 
 def price_vs_owners_scatter(df, f):
@@ -68,15 +69,30 @@ def price_vs_owners_scatter(df, f):
         st.info("Sem dados de owners para o gráfico de dispersão.")
         return
     q = q.dropna(subset=["owners_mid"]).copy()
-    q["primary_genre"] = q.get("primary_genre", pd.Series(["Unknown"]*len(q)))
+    # Garantir coluna de gênero principal
+    if "primary_genre" not in q.columns:
+        q["primary_genre"] = pd.Series(["Unknown"] * len(q), index=q.index)
+
+    # Downsample para evitar payload excessivo no front-end
+    MAX_POINTS = 20_000
+    total = len(q)
+    if total > MAX_POINTS:
+        q = q.sample(n=MAX_POINTS, random_state=42)
+        st.caption(f"Amostrando {MAX_POINTS:,} de {total:,} pontos para desempenho.")
+
+    # Reduzir tooltips quando ainda houver muitos pontos, para cortar tamanho de mensagem
+    full_tooltips = [c for c in ["Name", "Price", "owners_mid", "primary_genre", "Publishers", "User score"] if c in q.columns]
+    minimal_tooltips = [c for c in ["Name", "Price", "owners_mid", "primary_genre"] if c in q.columns]
+    tooltips = full_tooltips if len(q) <= 5_000 else minimal_tooltips
+
     chart = alt.Chart(q).mark_circle(opacity=0.6).encode(
         x=alt.X("Price:Q", title="Preço (USD)", scale=alt.Scale(zero=False)),
         y=alt.Y("owners_mid:Q", title="Owners (midpoint)", scale=alt.Scale(zero=False)),
         color=alt.Color("primary_genre:N", legend=alt.Legend(title="Gênero")),
         size=alt.Size("Recommendations:Q", legend=None, scale=alt.Scale(range=[10, 500])),
-        tooltip=[c for c in ["Name", "Price", "owners_mid", "primary_genre", "Publishers", "User score"] if c in q.columns]
+        tooltip=tooltips
     ).interactive()
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def price_by_genre_boxplot(df, f):
@@ -91,7 +107,7 @@ def price_by_genre_boxplot(df, f):
         y=alt.Y("Price:Q", title="Preço"),
         color=alt.Color("primary_genre:N", legend=None)
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def top_publishers_bar(df, f):
@@ -109,4 +125,4 @@ def top_publishers_bar(df, f):
         y=alt.Y("Publisher:N", sort="-x", title="Publisher"),
         tooltip=["Publisher", alt.Tooltip("owners_mid:Q", format=",.0f")]
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
