@@ -46,7 +46,7 @@ if df.empty:
 # Sidebar: filtros globais
 # Exibe a logo somente na sidebar (menu de filtros)
 try:
-    st.sidebar.image("logo.jpeg", use_container_width=True)
+    st.sidebar.image("logo.jpeg", width='stretch')
 except Exception:
     pass
 

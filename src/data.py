@@ -13,6 +13,10 @@ except Exception:  # pragma: no cover
 
 
 DATA_DIR_CANDIDATES = [
+    # Preferir dataset pequeno/mocado em produção para tornar o app leve
+    "data/games_small.csv",
+    "games_small.csv",
+    # Fallbacks: dataset completo
     "data/games.csv",
     "games.csv",
 ]
@@ -190,6 +194,13 @@ def _derive_release_year(df: pd.DataFrame) -> pd.DataFrame:
 def load_data():
     parquet_path = _find_first_path(PARQUET_CANDIDATES)
     csv_path = _find_first_path(DATA_DIR_CANDIDATES)
+
+    # Se existir um CSV pequeno (games_small.csv), priorizamos ele mesmo que exista Parquet
+    try:
+        if csv_path is not None and os.path.basename(csv_path).lower().startswith("games_small"):
+            parquet_path = None
+    except Exception:
+        pass
 
     # Helper: URL remoto opcional via secrets/variável de ambiente
     def _get_data_url():
