@@ -184,7 +184,16 @@ def _derive_release_year(df: pd.DataFrame) -> pd.DataFrame:
     years = dt.dt.year.astype("float")
     mask = years.isna()
     if mask.any():
+        # 1) Tenta extrair ano da própria coluna selecionada
         years.loc[mask] = df.loc[mask, col].apply(_extract_year_fallback)
+        # 2) Fallback adicional solicitado: usar 'Name'/'name' quando disponível
+        mask2 = years.isna()
+        if mask2.any():
+            if "Name" in df.columns:
+                years.loc[mask2] = df.loc[mask2, "Name"].apply(_extract_year_fallback)
+                mask2 = years.isna()
+            if mask2.any() and "name" in df.columns:
+                years.loc[mask2] = df.loc[mask2, "name"].apply(_extract_year_fallback)
     df["Release date"] = dt
     df["release_year"] = pd.Series(years, dtype="Int64")
     return df

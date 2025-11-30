@@ -13,10 +13,9 @@ from src.charts import (
 # Configuração da página com ícone da marca
 st.set_page_config(page_title="Games Analytics Dashboard", page_icon="logo.jpeg", layout="wide")
 
-# Cabeçalho com título (sem exibir a logo na área principal)
 def _brand_header():
     st.title("Panorama do Mercado de Games")
-    st.caption("Dashboard interativo baseado no dataset games.csv. Filtros na barra lateral.")
+    st.caption("Dashboard interativo baseado no dataset Steam Games. Filtros na barra lateral.")
 
 _brand_header()
 
@@ -44,7 +43,6 @@ if df.empty:
     )
 
 # Sidebar: filtros globais
-# Exibe a logo somente na sidebar (menu de filtros)
 try:
     st.sidebar.image("logo.jpeg", width='stretch')
 except Exception:
@@ -62,6 +60,7 @@ view = st.sidebar.radio(
     "Seção para exibir",
     [
         "Visão geral",
+        "Lançamentos por ano",
         "Top publicadoras",
         "Preço x Popularidade",
         "Preço por gênero",
@@ -92,6 +91,54 @@ def _kpis_top():
 
 # Renderização sob demanda
 if view == "Visão geral":
+    # Texto de boas-vindas e instruções da visão geral
+    st.markdown(
+        """
+        🎮 Bem-vindo ao CriticalHitData
+        
+        O CriticalHitData é um dashboard interativo criado para revelar, por meio de dados reais, quais fatores determinam o sucesso no mercado de games. Aqui você não trabalha com achismos, você analisa números, padrões e tendências que explicam o comportamento da indústria.
+        
+        A partir de um conjunto de milhares de jogos, mostramos como preço, gênero, modelo Free-to-Play, aceitação do público e crescimento ao longo dos anos impactam diretamente o desempenho de um game no mercado.
+        
+        📊 O que você encontra neste dashboard?
+        Neste ambiente você pode acompanhar, de forma clara e visual:
+        🎯 Quantidade total de jogos analisados
+        
+        
+        💰 Preço médio praticado no mercado
+        
+        
+        ⭐ Aceitação média dos jogadores
+        
+        
+        👥 Mediana de proprietários por jogo
+        
+        
+        📆 Evolução de lançamentos ao longo dos anos
+        
+        
+        Tudo isso com filtros dinâmicos
+        
+        
+        🔍 Como usar o CriticalHitData
+        Utilize os filtros laterais para ajustar os dados ao seu foco de análise
+        
+        
+        Escolha a seção desejada (Visão Geral, Preço x Popularidade, Gêneros, Publicadoras, etc.)
+        
+        
+        Observe os gráficos e indicadores para identificar padrões, tendências e oportunidades no mercado de games
+        
+        
+        O CriticalHitData transforma dados em inteligência de mercado para estudantes, desenvolvedores, analistas e entusiastas da indústria de games.
+        """
+    )
+    try:
+        st.divider()
+    except Exception:
+        st.markdown("---")
+    _kpis_top()
+elif view == "Lançamentos por ano":
     _kpis_top()
     _safe_draw(lambda: releases_by_year_chart(df, filters))
 elif view == "Top publicadoras":
