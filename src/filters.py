@@ -92,13 +92,20 @@ def sidebar_filters(df, dim_genres):
             genre_list = []
     top_genres = st.sidebar.multiselect("Gêneros (top 30)", genre_list)
 
-    # Score mínimo
-    min_score = st.sidebar.slider("User score mínimo", 0, 100, 0)
+    # Aceitação mínima (com base em Positive/Negative) em porcentagem 0–100
+    min_acceptance_pct = st.sidebar.slider(
+        "Aceitação mínima (%)",
+        min_value=0,
+        max_value=100,
+        value=0,
+        step=1,
+        help="Filtra por taxa de aceitação (Positive / (Positive + Negative) * 100)."
+    )
 
     return {
         "years": years,
         "price": price,
         "platforms": platforms,
         "genres": top_genres,
-        "min_score": min_score,
+        "min_acceptance_pct": min_acceptance_pct,
     }

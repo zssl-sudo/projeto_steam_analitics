@@ -97,12 +97,54 @@ def _parse_owners(s):
         return np.nan, np.nan, np.nan
 
 
+def _coerce_user_score(x):
+    """Converte diferentes formatos de 'User score' para um float na escala 0–10.
+    Exemplos suportados:
+    - "7.8/10" -> 7.8
+    - "76%" -> 7.6
+    - "7,8" (vírgula decimal) -> 7.8
+    - "0.78" (supõe 0–1) -> 7.8
+    - "78" (supõe 0–100) -> 7.8
+    Valores fora do intervalo [0, 10] retornam NaN.
+    """
+    if pd.isna(x):
+        return np.nan
+    s = str(x).strip()
+    if not s:
+        return np.nan
+    # normaliza vírgula decimal
+    s = s.replace(",", ".")
+    # captura primeiro número (inteiro ou decimal)
+    m = re.search(r"(\d+(?:\.\d+)?)", s)
+    if not m:
+        return np.nan
+    try:
+        val = float(m.group(1))
+    except Exception:
+        return np.nan
+    # Se o texto contiver '/10', tratar diretamente como escala 0–10
+    if "/10" in s:
+        pass  # já está em 0–10
+    else:
+        # Ajuste de escala heurístico
+        if 0 <= val <= 1:
+            val = val * 10.0
+        elif 10 < val <= 100:
+            val = val / 10.0
+    # sanidade final
+    if not (0 <= val <= 10):
+        return np.nan
+    return val
+
+
 DATE_CANDIDATES = [
     # Priorizar colunas com ano explícito
     "Year", "year",
     # Em seguida, datas completas com diversos nomes
     "Release date", "Release Date", "release_date", "ReleaseDate",
-    "Date", "date"
+    "Date", "date",
+    # Fallback adicional: alguns datasets trazem a data em 'Name'/'name'
+    "Name", "name",
 ]
 
 
@@ -410,6 +452,39 @@ def load_data():
     if need_rederive:
         df = _derive_release_year(df)
 
+    # Normalização robusta de 'User score' para escala 0–10
+    try:
+        if "User score" in df.columns:
+            df.loc[:, "User score"] = df["User score"].apply(_coerce_user_score).astype("float32")
+    except Exception:
+        # Não interromper o pipeline em caso de esquemas inesperados
+        pass
+
+    # Regra de limpeza solicitada:
+    # Remover jogos GRATUITOS cuja coluna "Metacritic score" seja exatamente 0.
+    # - Considera-se gratuito quando df["is_free"] é True, ou, na ausência dessa coluna,
+    #   quando Price <= 0 (com NaN tratado como 0).
+    try:
+        has_meta = "Metacritic score" in df.columns
+        if has_meta:
+            # Garante comparação robusta mesmo com strings/NaN
+            meta_series = pd.to_numeric(df["Metacritic score"], errors="coerce")
+            score_zero = meta_series.fillna(-1) == 0
+            # Determina gratuidade
+            if "is_free" in df.columns:
+                free_mask = df["is_free"].fillna(False).astype(bool)
+            elif "Price" in df.columns:
+                free_mask = (pd.to_numeric(df["Price"], errors="coerce").fillna(0) <= 0.0)
+            else:
+                free_mask = pd.Series(False, index=df.index)
+            # Aplica filtro: remove onde ambos são verdadeiros
+            to_drop = (free_mask & score_zero)
+            if to_drop.any():
+                df = df[~to_drop]
+    except Exception:
+        # Em caso de qualquer problema, não interrompe o pipeline
+        pass
+
     # --- Recorte global de anos (últimos N anos) para todo o dashboard ---
     # Aplica o corte após garantir release_year e antes de construir dimensões
     try:
@@ -458,15 +533,17 @@ def load_data():
         dim_genres = pd.DataFrame({"genre": [], "n": []})
 
     # Compactação de dtypes para reduzir memória (útil no deploy)
+    # Garante que estamos trabalhando em uma cópia real para evitar SettingWithCopyWarning
     try:
+        df = df.copy()
         if "primary_genre" in df.columns:
-            df["primary_genre"] = df["primary_genre"].astype("category")
+            df.loc[:, "primary_genre"] = df["primary_genre"].astype("category")
         if "Publishers" in df.columns:
             # Pode ser string; categorias economizam memória
-            df["Publishers"] = df["Publishers"].astype("category")
+            df.loc[:, "Publishers"] = df["Publishers"].astype("category")
         for c in ["Price", "User score"]:
             if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
+                df.loc[:, c] = pd.to_numeric(df[c], errors="coerce").astype("float32")
     except Exception:
         pass
 
