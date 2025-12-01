@@ -2,6 +2,7 @@ import altair as alt
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 # Limitar dados embutidos nos gráficos para evitar payloads gigantes (mais leve em produção)
 alt.data_transformers.enable("default", max_rows=15_000)
@@ -119,40 +120,55 @@ def releases_by_year_chart(df, f):
         st.info("Sem dados suficientes para exibir lançamentos por ano.")
         return
 
-    # 1) Tentar obter o ano diretamente da coluna Name/name (ex.: "Oct 12, 2017")
+    # Estratégia corrigida: priorizar 'release_year' e restringir a anos plausíveis
     years_series = None
-    name_col = "Name" if "Name" in q.columns else ("name" if "name" in q.columns else None)
-    if name_col is not None:
-        raw = q[name_col].astype(str).str.strip()
-        # Tenta parsing direto; em pandas >= 2.2 usar format="mixed" ajuda
-        try:
-            dt = pd.to_datetime(raw, errors="coerce", format="mixed", cache=True)
-        except TypeError:
-            dt = pd.to_datetime(raw, errors="coerce")
-        years_series = dt.dt.year.astype("float")
-        # Fallback: regex 4 dígitos onde parsing falhou
-        mask_na = years_series.isna()
-        if mask_na.any():
-            import re as _re
-            years_series.loc[mask_na] = raw[mask_na].apply(lambda s: int(_re.search(r"(\d{4})", s).group(1)) if _re.search(r"(\d{4})", s) else float("nan"))
-        years_series = years_series.astype("Int64")
 
-    # 2) Caso falhe, usa a coluna já derivada release_year (se existir)
-    if years_series is None or years_series.dropna().empty:
-        if "release_year" in q.columns:
-            years_series = q["release_year"].astype("Int64")
-        else:
-            # Tenta derivar no ato
+    # 1) Usa release_year se existir e tiver valores
+    if "release_year" in q.columns and q["release_year"].notna().any():
+        years_series = pd.to_numeric(q["release_year"], errors="coerce")
+
+    # 2) Caso contrário, tenta derivar no ato a partir de 'Release date' e outros campos
+    if years_series is None or pd.isna(years_series).all():
+        try:
+            from src.data import _derive_release_year
+            q2 = _derive_release_year(q.copy())
+            cand = pd.to_numeric(q2.get("release_year"), errors="coerce")
+            if cand.notna().any():
+                years_series = cand
+        except Exception:
+            years_series = None
+
+    # 3) Último recurso: extrair do título (Name/name)
+    if years_series is None or pd.isna(years_series).all():
+        name_col = "Name" if "Name" in q.columns else ("name" if "name" in q.columns else None)
+        if name_col is not None:
+            raw = q[name_col].astype(str).str.strip()
             try:
-                from src.data import _derive_release_year
-                q = _derive_release_year(q.copy())
-                years_series = q.get("release_year", pd.Series(dtype="Int64"))
-            except Exception:
-                years_series = pd.Series(dtype="Int64")
+                dt = pd.to_datetime(raw, errors="coerce", format="mixed", cache=True)
+            except TypeError:
+                dt = pd.to_datetime(raw, errors="coerce")
+            cand = dt.dt.year.astype("float")
+            mask_na = cand.isna()
+            if mask_na.any():
+                import re as _re
+                cand.loc[mask_na] = raw[mask_na].apply(
+                    lambda s: int(_re.search(r"(\d{4})", s).group(1)) if _re.search(r"(\d{4})", s) else float("nan")
+                )
+            years_series = cand
 
     # Se ainda assim não houver anos válidos, aborta
+    if years_series is None or pd.isna(years_series).all():
+        st.info("Não foi possível identificar o ano de lançamento.")
+        return
+
+    # Limpeza final: descartar anos fora de uma faixa plausível e do ano atual
+    current_year = datetime.now().year
+    years_series = pd.to_numeric(years_series, errors="coerce")
+    years_series = years_series.where((years_series >= 1970) & (years_series <= current_year))
+    years_series = years_series.astype("Int64")
+
     if years_series.dropna().empty:
-        st.info("Não foi possível identificar o ano de lançamento a partir da coluna 'Name'/'name'.")
+        st.info("Não há anos plausíveis para exibir após a limpeza dos dados.")
         return
 
     # Agregação: contagem de lançamentos por ano
